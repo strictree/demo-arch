@@ -340,28 +340,18 @@
                     document.getElementById('loading').style.display = 'none';
                 },
                 (xhr) => {
-                    let percentComplete = 0;
-                    const loadedMB = (xhr.loaded / 1024 / 1024).toFixed(2);
+                    const ACTUAL_TOTAL_BYTES = 9.17 * 1024 * 1024;
 
-                    if (xhr.lengthComputable && xhr.total > 0) {
-                        // Calculate percentage, but clamp it to 99% if loaded exceeds total due to gzip decompression
-                        percentComplete = Math.min((xhr.loaded / xhr.total) * 100, 99.9);
-                        const totalMB = (xhr.total / 1024 / 1024).toFixed(2);
+                    // 使用真实总大小计算百分比
+                    let percentComplete = (xhr.loaded / ACTUAL_TOTAL_BYTES) * 100;
 
-                        document.getElementById('progress-bar').style.width = percentComplete + '%';
-                        document.getElementById('load-txt').innerText = `Downloading: ${Math.floor(percentComplete)}%`;
+                    // 加个保险，最高不超过 100%
+                    percentComplete = Math.min(percentComplete, 100);
 
-                        // If browser decompresses on the fly, loaded bytes will exceed compressed total bytes
-                        if (xhr.loaded > xhr.total) {
-                            document.getElementById('load-sub').innerText = `${loadedMB} MB (Decompressing...)`;
-                        } else {
-                            document.getElementById('load-sub').innerText = `${loadedMB} MB / ${totalMB} MB`;
-                        }
-                    } else {
-                        // Fallback if server doesn't provide Content-Length
-                        document.getElementById('load-txt').innerText = `Downloading...`;
-                        document.getElementById('load-sub').innerText = `${loadedMB} MB downloaded`;
-                    }
+                    // 更新 UI
+                    document.getElementById('progress-bar').style.width = percentComplete + '%';
+                    document.getElementById('load-txt').innerText = `Downloading: ${Math.floor(percentComplete)}%`;
+                    document.getElementById('load-sub').innerText = `${(xhr.loaded / 1024 / 1024).toFixed(2)} MB / 9.00 MB`;
                 },
                 (error) => {
                     console.error("PLY Model load failed", error);
