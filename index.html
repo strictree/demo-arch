@@ -50,7 +50,7 @@
         input[type=checkbox] { accent-color: #46F884; cursor: pointer; transform: scale(1.2); }
 
         /* Loading Animation */
-        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; z-index: 1000; }
         .spinner { width: 40px; height: 40px; border: 4px solid rgba(255, 255, 255, 0.1); border-left-color: #46F884; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px auto; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
@@ -68,7 +68,7 @@
         <h3 id="load-txt">Loading Arch Data...</h3>
         <p style="color:#aaa; font-size:12px;" id="load-sub">Decoding Point Cloud Attributes</p>
         <div id="progress-container"><div id="progress-bar"></div></div>
-        <p id="error-msg">Load failed! If you double-clicked the HTML, please run it using a local server (e.g., VSCode Live Server or python -m http.server).</p>
+        <p id="error-msg">Load failed! Please run using a local server.</p>
     </div>
 
     <!-- ================= Left Panel ================= -->
@@ -100,12 +100,17 @@
             <span id="hist-min">-30mm</span><span id="hist-mid">0mm</span><span id="hist-max">+30mm</span>
         </div>
 
-        <div class="section-title" style="margin-top:25px;">Display Mode</div>
+        <div class="section-title" style="margin-top:25px;">Layers Manager</div>
         <div class="layer-toggle">
             <span style="color: #46F884;">Deviation Heatmap</span>
             <input type="checkbox" id="chk-heat" checked>
         </div>
-        <p style="font-size: 10px; color: #555; margin-top: -5px;">Uncheck to view raw point cloud</p>
+        <!-- 虚拟 BIM 真值控制按钮 -->
+        <div class="layer-toggle" style="margin-top: 8px;">
+            <span style="color: #4d94ff;">Fitted Arch (Ideal Truth)</span>
+            <input type="checkbox" id="chk-fitted">
+        </div>
+        <p style="font-size: 10px; color: #555; margin-top: -5px;">Uncheck heatmap to view raw point cloud</p>
     </div>
 
     <!-- ================= Right Panel ================= -->
@@ -126,7 +131,6 @@
         <div class="dual-slider-container">
             <div class="slider-track-bg"></div>
             <div class="slider-track-active" id="slider-track"></div>
-            <!-- Sliders supporting negative values -->
             <input type="range" id="sld-min" min="-30" max="30" step="0.5" value="-30">
             <input type="range" id="sld-max" min="-30" max="30" step="0.5" value="30">
         </div>
@@ -171,13 +175,10 @@
             varying float vDeviation;
             uniform float uPointSize;
             void main() {
-                // Decode: Backend mapped -30~+30mm to 0.0~1.0 in color.r
-                // We restore it to real millimeter values for logic processing
+                // Decode from R channel
                 vDeviation = color.r * 60.0 - 30.0;
-
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 gl_Position = projectionMatrix * mvPosition;
-                // Perspective point size
                 gl_PointSize = uPointSize * (400.0 / -mvPosition.z);
             }
         `;
@@ -185,10 +186,9 @@
         const fragmentShader = `
             uniform float uMin;
             uniform float uMax;
-            uniform float uShowHeat; // 1.0 = Heatmap, 0.0 = Raw grey cloud
+            uniform float uShowHeat;
             varying float vDeviation;
 
-            // Heatmap color gradient mapping
             vec3 getHeatmap(float t) {
                 if (t < 0.25) return mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), t * 4.0);
                 if (t < 0.50) return mix(vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0), (t - 0.25) * 4.0);
@@ -198,12 +198,11 @@
 
             void main() {
                 if (uShowHeat < 0.5) {
-                    gl_FragColor = vec4(0.6, 0.6, 0.6, 1.0); // Raw mode
+                    gl_FragColor = vec4(0.6, 0.6, 0.6, 1.0);
                     return;
                 }
-
                 if (vDeviation < uMin || vDeviation > uMax) {
-                    gl_FragColor = vec4(0.2, 0.2, 0.2, 0.5); // Out of range becomes dark grey
+                    gl_FragColor = vec4(0.2, 0.2, 0.2, 0.5);
                 } else {
                     float range = uMax - uMin;
                     float t = range > 0.001 ? clamp((vDeviation - uMin) / range, 0.0, 1.0) : 0.0;
@@ -231,6 +230,9 @@
         const minTxt = document.getElementById('min-txt');
         const maxTxt = document.getElementById('max-txt');
 
+        // 存储生成的理想几何模型
+        let idealShapeMesh = null;
+
         function updateSliderUI() {
             let minV = parseFloat(minSlider.value);
             let maxV = parseFloat(maxSlider.value);
@@ -247,7 +249,6 @@
             minTxt.innerText = minV.toFixed(1) + ' mm';
             maxTxt.innerText = maxV.toFixed(1) + ' mm';
 
-            // Send to GPU in real-time
             heatMat.uniforms.uMin.value = minV;
             heatMat.uniforms.uMax.value = maxV;
         }
@@ -266,6 +267,12 @@
             heatMat.uniforms.uShowHeat.value = e.target.checked ? 1.0 : 0.0;
         };
 
+        document.getElementById('chk-fitted').onchange = (e) => {
+            if (idealShapeMesh) {
+                idealShapeMesh.visible = e.target.checked;
+            }
+        };
+
         document.getElementById('sld-size').oninput = (e) => {
             const size = parseFloat(e.target.value);
             document.getElementById('size-txt').innerText = size.toFixed(3);
@@ -276,12 +283,13 @@
         // 4. Data Loading & Initialization
         // ==========================================
         async function init() {
-            // A. Read backend generated JSON stats (Updated Path: same directory)
+            // A. Fetch JSON data
             try {
                 const res = await fetch('heatmap_stats.json');
                 if(res.ok) {
                     const stats = await res.json();
 
+                    // Populate UI
                     const em = stats.engineering_metrics;
                     if(em) {
                         document.getElementById('val-span').innerHTML = `${em.span_m.toFixed(2)} <span>m</span>`;
@@ -317,12 +325,42 @@
                             });
                         }
                     }
+
+                    // --- Generate Ideal Shape from parameters ---
+                    const cp = stats.cylinder_params;
+                    if (cp) {
+                        // Create mathematical cylinder
+                        const geometry = new THREE.CylinderGeometry(cp.radius, cp.radius, cp.length, 64, 1, true);
+                        const material = new THREE.MeshBasicMaterial({
+                            color: 0x4d94ff,
+                            transparent: true,
+                            opacity: 0.25,     // 25% opacity
+                            wireframe: false,
+                            side: THREE.DoubleSide,
+                            depthWrite: false  // Prevent Z-fighting and occlusion
+                        });
+
+                        idealShapeMesh = new THREE.Mesh(geometry, material);
+
+                        // Align the cylinder in 3D space
+                        const axisVec = new THREE.Vector3(cp.axis[0], cp.axis[1], cp.axis[2]).normalize();
+                        const centerVec = new THREE.Vector3(cp.center[0], cp.center[1], cp.center[2]);
+
+                        const upVec = new THREE.Vector3(0, 1, 0);
+                        const quaternion = new THREE.Quaternion().setFromUnitVectors(upVec, axisVec);
+
+                        idealShapeMesh.setRotationFromQuaternion(quaternion);
+                        idealShapeMesh.position.copy(centerVec);
+
+                        idealShapeMesh.visible = false; // Hidden by default
+                        scene.add(idealShapeMesh);
+                    }
                 }
             } catch (err) {
-                console.warn("heatmap_stats.json fetch failed. Falling back to defaults.", err);
+                console.warn("heatmap_stats.json fetch failed.", err);
             }
 
-            // B. Load encoded PLY model (Updated Path: same directory)
+            // B. Load PLY file
             new PLYLoader().load(
                 'layer_encoded.ply',
                 (geo) => {
@@ -340,15 +378,11 @@
                     document.getElementById('loading').style.display = 'none';
                 },
                 (xhr) => {
-                    const ACTUAL_TOTAL_BYTES = 9.17 * 1024 * 1024;
-
-                    // 使用真实总大小计算百分比
+                    // Force precise progress bar based on ~9MB file size
+                    const ACTUAL_TOTAL_BYTES = 9.0 * 1024 * 1024;
                     let percentComplete = (xhr.loaded / ACTUAL_TOTAL_BYTES) * 100;
-
-                    // 加个保险，最高不超过 100%
                     percentComplete = Math.min(percentComplete, 100);
 
-                    // 更新 UI
                     document.getElementById('progress-bar').style.width = percentComplete + '%';
                     document.getElementById('load-txt').innerText = `Downloading: ${Math.floor(percentComplete)}%`;
                     document.getElementById('load-sub').innerText = `${(xhr.loaded / 1024 / 1024).toFixed(2)} MB / 9.00 MB`;
