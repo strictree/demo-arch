@@ -2,7 +2,7 @@
     "project_id": "Ambergate_arch_seg_2",
     "engineering_metrics": {
         "rmse_m": 0.0347,
-        "span_m": 11.355,
+        "span_m": 9.2976,
         "rise_m": 2.2896,
         "length_m": 18.3288,
         "settlement_mm": 215.99
